@@ -1,8 +1,8 @@
 /**
- * LLM Chat App Frontend with Chat History
+ * LLM Chat App Frontend with Chat History & Hyperlinks
  *
  * Handles the chat UI interactions, communication with the backend API,
- * and persistent chat history storage.
+ * persistent chat history storage, and automatic link detection.
  */
 
 // DOM elements
@@ -19,6 +19,9 @@ let isProcessing = false;
 // Storage keys
 const STORAGE_KEY = "llm_chat_history";
 const CURRENT_CHAT_KEY = "llm_current_chat_id";
+
+// URL detection regex
+const URL_REGEX = /(https?:\/\/[^\s]+|www\.[^\s]+|[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}[^\s]*)/g;
 
 // Initialize on page load
 document.addEventListener("DOMContentLoaded", () => {
@@ -47,6 +50,41 @@ function setupEventListeners() {
 }
 
 /**
+ * Convert URLs in text to clickable hyperlinks
+ */
+function convertUrlsToLinks(text) {
+    if (!text) return '';
+    
+    return text.replace(URL_REGEX, function(url) {
+        let href = url;
+        // Add https:// if missing for www links
+        if (url.startsWith('www.')) {
+            href = 'https://' + url;
+        }
+        // Skip if not a valid URL pattern
+        if (!href.startsWith('http://') && !href.startsWith('https://')) {
+            href = 'https://' + href;
+        }
+        return `<a href="${href}" target="_blank" rel="noopener noreferrer" class="chat-link">${escapeHtml(url)}</a>`;
+    });
+}
+
+/**
+ * Format message content with links and line breaks
+ */
+function formatMessageContent(content) {
+    if (!content) return '';
+    
+    // First convert URLs to links
+    let formatted = convertUrlsToLinks(content);
+    
+    // Convert line breaks to <br> tags
+    formatted = formatted.replace(/\n/g, '<br>');
+    
+    return formatted;
+}
+
+/**
  * Load all saved chats from localStorage
  */
 function loadAllChats() {
@@ -56,15 +94,11 @@ function loadAllChats() {
     if (savedChats) {
         const chats = JSON.parse(savedChats);
         
-        // If there's a saved current chat ID, load that chat
         if (savedChatId && chats[savedChatId]) {
             loadChat(savedChatId);
-        } 
-        // Otherwise, load the most recent chat or create new one
-        else {
+        } else {
             const chatIds = Object.keys(chats);
             if (chatIds.length > 0) {
-                // Load the most recent chat
                 const mostRecent = chatIds.sort((a, b) => 
                     chats[b].timestamp - chats[a].timestamp
                 )[0];
@@ -93,13 +127,11 @@ function saveCurrentChat() {
     if (currentChatId) {
         const allChats = getAllChats();
         
-        // Generate title from first user message
         const firstUserMessage = chatHistory.find(m => m.role === 'user');
         const title = firstUserMessage 
             ? firstUserMessage.content.slice(0, 30) + (firstUserMessage.content.length > 30 ? '...' : '')
             : 'New Chat';
         
-        // Get last message for preview
         const lastMessage = chatHistory[chatHistory.length - 1];
         const preview = lastMessage 
             ? lastMessage.content.slice(0, 50) + (lastMessage.content.length > 50 ? '...' : '')
@@ -146,19 +178,13 @@ function loadChat(chatId) {
     currentChatId = chatId;
     chatHistory = [...chat.messages];
     
-    // Clear and reload messages
     chatMessages.innerHTML = '';
     chatHistory.forEach(msg => {
         addMessageToChat(msg.role, msg.content, false);
     });
     
-    // Update active state in sidebar
     updateActiveChatInSidebar(chatId);
-    
-    // Scroll to bottom
     chatMessages.scrollTop = chatMessages.scrollHeight;
-    
-    // Save current chat ID
     localStorage.setItem(CURRENT_CHAT_KEY, currentChatId);
 }
 
@@ -166,7 +192,6 @@ function loadChat(chatId) {
  * Start a new chat
  */
 function startNewChat() {
-    // Save current chat before starting new one
     if (chatHistory.length > 0) {
         saveCurrentChat();
     }
@@ -175,22 +200,19 @@ function startNewChat() {
     chatHistory = [
         {
             role: "assistant",
-            content: "Hello! I'm an LLM chat app powered by Cloudflare Workers AI. How can I help you today?",
+            content: "Hello! I'm an LLM chat app powered by Cloudflare Workers AI. How can I help you today?\n\nYou can share links and they will be clickable! Try it: https://cloudflare.com",
         },
     ];
     
-    // Clear messages
     chatMessages.innerHTML = '';
     chatHistory.forEach(msg => {
         addMessageToChat(msg.role, msg.content, false);
     });
     
-    // Remove active class from all history items
     document.querySelectorAll('.history-item').forEach(item => {
         item.classList.remove('active');
     });
     
-    // Clear current chat ID from storage
     localStorage.removeItem(CURRENT_CHAT_KEY);
 }
 
@@ -205,7 +227,6 @@ function deleteChat(chatId, event) {
         delete allChats[chatId];
         localStorage.setItem(STORAGE_KEY, JSON.stringify(allChats));
         
-        // If we deleted the current chat, start a new one
         if (currentChatId === chatId) {
             startNewChat();
         }
@@ -259,17 +280,15 @@ function importChatHistory(event) {
         try {
             const imported = JSON.parse(e.target.result);
             const existingChats = getAllChats();
+            let mergedChats = { ...existingChats };
             
             if (imported.chats) {
-                // Merge imported chats with existing
-                const mergedChats = { ...existingChats, ...imported.chats };
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedChats));
+                mergedChats = { ...existingChats, ...imported.chats };
             } else if (imported.id) {
-                // Single chat format
                 mergedChats[imported.id] = imported;
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedChats));
             }
             
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(mergedChats));
             alert('Chat history imported successfully!');
             loadAllChats();
             renderHistoryList();
@@ -300,7 +319,6 @@ function renderHistoryList() {
         return;
     }
     
-    // Sort by timestamp (newest first)
     chatArray.sort((a, b) => b.timestamp - a.timestamp);
     
     historyList.innerHTML = chatArray.map(chat => `
@@ -356,47 +374,62 @@ function escapeHtml(text) {
 }
 
 /**
+ * Add message to chat with link support
+ */
+function addMessageToChat(role, content, shouldSave = true) {
+    const messageEl = document.createElement("div");
+    messageEl.className = `message ${role}-message`;
+    
+    const formattedContent = formatMessageContent(content);
+    messageEl.innerHTML = `<p>${formattedContent}</p>`;
+    chatMessages.appendChild(messageEl);
+    
+    // Add click event listener to all links in the message
+    const links = messageEl.querySelectorAll('.chat-link');
+    links.forEach(link => {
+        link.addEventListener('click', (e) => {
+            e.stopPropagation();
+        });
+    });
+    
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    
+    if (shouldSave) {
+        saveCurrentChat();
+    }
+}
+
+/**
  * Sends a message to the chat API and processes the response
  */
 async function sendMessage() {
     const message = userInput.value.trim();
 
-    // Don't send empty messages
     if (message === "" || isProcessing) return;
 
-    // Disable input while processing
     isProcessing = true;
     userInput.disabled = true;
     sendButton.disabled = true;
 
-    // Add user message to chat
     addMessageToChat("user", message);
 
-    // Clear input
     userInput.value = "";
     userInput.style.height = "auto";
 
-    // Show typing indicator
     typingIndicator.classList.add("visible");
 
-    // Add message to history
     chatHistory.push({ role: "user", content: message });
-    
-    // Save after adding user message
     saveCurrentChat();
 
     try {
-        // Create new assistant response element
         const assistantMessageEl = document.createElement("div");
         assistantMessageEl.className = "message assistant-message";
         assistantMessageEl.innerHTML = "<p></p>";
         chatMessages.appendChild(assistantMessageEl);
         const assistantTextEl = assistantMessageEl.querySelector("p");
 
-        // Scroll to bottom
         chatMessages.scrollTop = chatMessages.scrollHeight;
 
-        // Send request to API
         const response = await fetch("/api/chat", {
             method: "POST",
             headers: {
@@ -407,7 +440,6 @@ async function sendMessage() {
             }),
         });
 
-        // Handle errors
         if (!response.ok) {
             throw new Error("Failed to get response");
         }
@@ -415,13 +447,22 @@ async function sendMessage() {
             throw new Error("Response body is null");
         }
 
-        // Process streaming response
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let responseText = "";
         let buffer = "";
-        const flushAssistantText = () => {
-            assistantTextEl.textContent = responseText;
+        
+        const updateMessageContent = () => {
+            // Update with formatted content including links
+            const formatted = formatMessageContent(responseText);
+            assistantTextEl.innerHTML = formatted;
+            
+            // Add click handlers to any links in the updated content
+            const links = assistantMessageEl.querySelectorAll('.chat-link');
+            links.forEach(link => {
+                link.addEventListener('click', (e) => e.stopPropagation());
+            });
+            
             chatMessages.scrollTop = chatMessages.scrollHeight;
         };
 
@@ -430,35 +471,28 @@ async function sendMessage() {
             const { done, value } = await reader.read();
 
             if (done) {
-                // Process any remaining complete events in buffer
                 const parsed = consumeSseEvents(buffer + "\n\n");
                 for (const data of parsed.events) {
-                    if (data === "[DONE]") {
-                        break;
-                    }
+                    if (data === "[DONE]") break;
                     try {
                         const jsonData = JSON.parse(data);
                         let content = "";
-                        if (
-                            typeof jsonData.response === "string" &&
-                            jsonData.response.length > 0
-                        ) {
+                        if (typeof jsonData.response === "string" && jsonData.response.length > 0) {
                             content = jsonData.response;
                         } else if (jsonData.choices?.[0]?.delta?.content) {
                             content = jsonData.choices[0].delta.content;
                         }
                         if (content) {
                             responseText += content;
-                            flushAssistantText();
+                            updateMessageContent();
                         }
                     } catch (e) {
-                        console.error("Error parsing SSE data as JSON:", e, data);
+                        console.error("Error parsing SSE data:", e);
                     }
                 }
                 break;
             }
 
-            // Decode chunk
             buffer += decoder.decode(value, { stream: true });
             const parsed = consumeSseEvents(buffer);
             buffer = parsed.buffer;
@@ -471,32 +505,26 @@ async function sendMessage() {
                 try {
                     const jsonData = JSON.parse(data);
                     let content = "";
-                    if (
-                        typeof jsonData.response === "string" &&
-                        jsonData.response.length > 0
-                    ) {
+                    if (typeof jsonData.response === "string" && jsonData.response.length > 0) {
                         content = jsonData.response;
                     } else if (jsonData.choices?.[0]?.delta?.content) {
                         content = jsonData.choices[0].delta.content;
                     }
                     if (content) {
                         responseText += content;
-                        flushAssistantText();
+                        updateMessageContent();
                     }
                 } catch (e) {
-                    console.error("Error parsing SSE data as JSON:", e, data);
+                    console.error("Error parsing SSE data:", e);
                 }
             }
-            if (sawDone) {
-                break;
-            }
+            if (sawDone) break;
         }
 
-        // Add completed response to chat history
         if (responseText.length > 0) {
             chatHistory.push({ role: "assistant", content: responseText });
-            saveCurrentChat(); // Save after adding assistant response
-            renderHistoryList(); // Update sidebar to show new preview
+            saveCurrentChat();
+            renderHistoryList();
         }
     } catch (error) {
         console.error("Error:", error);
@@ -510,31 +538,11 @@ async function sendMessage() {
         });
         saveCurrentChat();
     } finally {
-        // Hide typing indicator
         typingIndicator.classList.remove("visible");
-
-        // Re-enable input
         isProcessing = false;
         userInput.disabled = false;
         sendButton.disabled = false;
         userInput.focus();
-    }
-}
-
-/**
- * Helper function to add message to chat
- */
-function addMessageToChat(role, content, shouldSave = true) {
-    const messageEl = document.createElement("div");
-    messageEl.className = `message ${role}-message`;
-    messageEl.innerHTML = `<p>${escapeHtml(content)}</p>`;
-    chatMessages.appendChild(messageEl);
-
-    // Scroll to bottom
-    chatMessages.scrollTop = chatMessages.scrollHeight;
-    
-    if (shouldSave) {
-        saveCurrentChat();
     }
 }
 
@@ -562,10 +570,10 @@ function consumeSseEvents(buffer) {
     return { events, buffer: normalized };
 }
 
-// Make functions globally available for HTML onclick handlers
+// Make functions globally available
 window.startNewChat = startNewChat;
 window.deleteChat = deleteChat;
 window.clearAllHistory = clearAllHistory;
 window.exportChatHistory = exportChatHistory;
-window.loadChatById = loadChat;
 window.importChatHistory = importChatHistory;
+window.loadChatById = loadChat;
